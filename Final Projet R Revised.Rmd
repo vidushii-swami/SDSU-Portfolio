@@ -1,0 +1,848 @@
+---
+title: "Spatial Analaysis Project"
+author: "Vidushii Swami"
+date: "5/9/2022"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(readr)
+library(MASS)
+library(KernSmooth)
+library(ggplot2)
+library(dplyr)
+library(fANCOVA)
+library(GGally)
+library("sp")
+#install.packages('raster')
+library("raster")
+library("maptools")
+#install.packages("rgdal")
+library("rgdal")
+#install.packages("dismo")
+library("dismo")
+```
+
+## Introduction and Motivation 
+
+The Mediterranean Sea, the dataset includes 1,771 locations of important seagrass species and 1,284 locations of seagrass absence (algorithmically created). 217 biological, chemical, physical, and human-related metrics have been integrated into this data set from various publicly available data sources for each location.
+
+My motivation behind this project is to spatially understand how the change in temperature affects the bio-diversity under water but more specifically the Seaweed. This information is important to understand so we can study the effect of changing temperatures and the presence of species but also, how to understand the requirements of the type of environment is necessary to grow the species. 
+
+
+## Reseach Question 
+Does water temperature affect the special distribution of the underwater seagrass: found in the Mediterranean sea. 
+
+We will explore different temperatures of natural seasons (spring, summer, autumn, and winter) in the Mediterranean, with a binary conversion for absence vs presence of 2 data sets. 
+
+1. Absence vs Cymodecea nodosa, this will be a research on only a single species 
+2. Data set of only absence, Cymodocea or ruppia cirrhosa. Therefore absence and presence will be equal. 
+
+
+#Importing my Project's Dataset 
+For this project the data was found in 2 separate text files absence.2 and presence.2. Hence I used the import function in R and did not include the default heading. Then I used the command rbind to add both data sets together. 
+```{r}
+
+#lapply(presence.2)
+
+#Data set with everything apart from absence will be binary (all species clustered together) 
+seaweed=data.frame(presence.2)
+seaweed=rbind(presence.2, absence.2)
+
+save(seaweed,presence.2, absence.2, file="sea.Rdata" )
+head(seaweed)
+str(seaweed)
+summary(seaweed)
+
+#modifications
+# levels of species of different seaweed 
+seaweed$BIO_CLASS= as.factor(seaweed$BIO_CLASS)
+seaweed$BIO_CLASS
+levelsbioclass =levels(seaweed$BIO_CLASS)
+levelsbioclass
+
+#levels of substrate, the topograpgy where the seagrass is found 
+
+seaweed$Substrate= as.factor(seaweed$Substrate)
+#seaweed$Substrate
+levelssubstrate = levels(seaweed$Substrate)
+levelssubstrate
+
+
+#create a new col of binary data absence and presence 
+attach(seaweed)
+absencenpresence=ifelse(BIO_CLASS=="absence", 0, 1)
+absencenpresence 
+seaweed=cbind(seaweed,absencenpresence)
+
+
+#Data set of absence vs Cymodecea nodosa, this will be research of only a single species 
+Cymodecea.nodosa = presence.2 %>% 
+  filter(BIO_CLASS=="Cymodocea nodosa")
+Cymodecea.nodosa= data.frame(Cymodecea.nodosa)
+absence=data.frame(absence.2)
+#View(Cymodecea.nodosa)
+Cymodecea.nodosa=rbind(Cymodecea.nodosa, absence)
+#View(Cymodecea.nodosa)
+
+Cymodecea.nodosa$BIO_CLASS= as.factor(Cymodecea.nodosa$BIO_CLASS)
+levelsCymodecea =levels(Cymodecea.nodosa$BIO_CLASS)
+levelsCymodecea
+
+#create a new col of binary data absence and presence 
+absencenCyN=ifelse(Cymodecea.nodosa$BIO_CLASS=="absence", 0, 1)
+Cymodecea.nodosa= cbind(Cymodecea.nodosa,absencenCyN )
+table(absencenCyN)
+
+
+#Data set of only absence, Cymodocea or ruppia cirrhosa. Therefore absence and presence will be equal. 
+Ruppia.cirrhosa = presence.2 %>% 
+   filter(BIO_CLASS=="Ruppia cirrhosa")
+cymodecea.nodosa = presence.2 %>% 
+  filter(BIO_CLASS=="Cymodocea nodosa")
+absence3=data.frame(absence.2)
+cymodecea.nodosa= data.frame(cymodecea.nodosa)
+Ruppia.cirrhosa=data.frame(Ruppia.cirrhosa)
+equal= rbind(cymodecea.nodosa, Ruppia.cirrhosa, absence3)
+
+equal$BIO_CLASS= as.factor(equal$BIO_CLASS)
+levelsequal =levels(equal$BIO_CLASS)
+levelsequal
+
+#create a new col of binary data absence and presence 
+absenceEq=ifelse(equal$BIO_CLASS=="absence", 0, 1)
+equal= cbind(equal ,absenceEq)
+table(absenceEq)
+
+```
+
+##Data Science Topic -Models for Spatial Data 
+
+To be able to explain spatial models I will be using a dataset that is small but typical data of multivariate point observations. There are 174 soil profiles observations, representative of the humid forest region of southwestern Cameroon. 
+
+There are 3 fixed soil layers (0-10cm, 10-20cm , and 30-50cm) we sampled. 
+
+**Trend Surfaces** 
+Regional trend can be modeled by a _trend surface_ Normally we can use the simple approach of Ordinary Least Squares and create a Linear model of some kind, however we need to be cautious of observations that might be clustered or even spatially correlated. 
+
+Hence if sample point are clustered (like this data set and my data set) there is danger of *mis-estimating* the regression coefficients. Therefore the number of close-by points with similar values will "pull" a trend surface towards them, which means that the calculated R^2 may be over optimistic.
+
+Therefore we will use a method called Gernalised Least Squares (GLS) to estimate the trend surface. 
+  This method will allow a _covarience structure between residuals_ to be included directly in the least-squares solution of the regression equation. 
+  
+   \beta_{gls} =(\mathbf{X}^T\cdot\mathbf{C}^-1\cdot\mathbf{X})^{-1}\cdot\mathbf{X}^T\mathbf{C}^{-1}\cdotmathbf{y}
+  
+  X - Design Matrix 
+  C - Covariance Matrix of spatially-correlated residuals 
+  y - Observations
+
+If there is no spatial dependence among the errors, C reduced to I$$\sigma^2$$ and the estimate to Ordinary Least Squares (OLS)
+                  \beta_{ols} =(\mathbf{x}^T\mathbf{x})^{-1}\mathbf{x}^T\mathbf{y}
+  
+  GLS surfaces and spatial correlation structures can both be analysed in the spatial package. 
+  
+Note-The trend surface coefficients generated by the spatial package do not correspond to the original coordinates (e and n), but rather to offsets in e and n values from the center of the trend surface region, defined by the coordinates' extreme values. This is done to improve the stability of computations. The value in the area's center is thus the first coefficient. (partd)
+
+
+
+```{r}
+getwd()
+setwd('/Users/vidushiiswami/Desktop/Stat410/')
+#a Reading in the DATA 
+library(readr)
+obs <- read_csv("/Users/vidushiiswami/Desktop/Stat410/obs.csv")
+View(obs)
+
+
+#b creating a post plot of sample locaions, colored by agro-ecological zone and the symbol size proportional to the value of subsoils clay at each location. 
+
+plot(e, n, cex=Clay5*3/max(Clay5), pch=20, col=as.numeric(zone), asp=1)
+grid(lty=1)  
+title("Postplot of topsoil clay %, by soil type")
+
+#c
+#install.packages('spatial')
+require(spatial)
+
+#Here we use surf.ls method to compute the OLS trend surface; and display it's analysis of varience and coefficients 
+while (is.element("package:spatial", search())) detach(package:spatial)
+clay5.ls=surf.ls(1, e, n, Clay5)
+summary(clay5.ls)
+clay5.ls$beta
+
+
+#d
+attach(obs)
+(predict(clay5.ls,
+     diff(range(e))/2 + min(e),
+     diff(range(n))/2 + min(n)))
+clay5.ls$beta[1]
+
+
+# we will use the correlogram method to compute the spatial auto-correlation of subsoil clay.
+c = correlogram(clay5.ls, 50, plotit=F)
+str(c)
+plot(c, ylim=c(-.2, .6), xlim=c(0,12000), pch=20, col="blue")
+text(c$x, c$y, round(c$y, 2), pos=3)
+abline(h=0)
+
+# estimate function by eye: exponential
+plot(c, ylim=c(-.2, .6), xlim=c(0,12000), pch=20, col="blue")
+abline(h=0)
+d = seq(100,12000, by=100)
+lines(d, expcov(d, d=600, alpha=.4), col="blue")
+
+
+clay5.gls= surf.gls(1, expcov, d=600, alpha=.4, e, n, Clay5)
+summary(clay5.gls)
+clay5.gls$beta
+
+
+
+#Local spatial dependence and ordinary Kringing
+xmin = min(e); xmax = max(e); ymin = min(n); ymax = max(n); res = 40
+clay5.ts = trmat(clay5.ls, xmin, xmax, ymin, ymax, res)
+clay5.gts = trmat(clay5.gls, xmin, xmax, ymin, ymax, res)
+eqscplot(clay5.gts, type="n",
+     main="OLS and GLS trend surfaces, subsoil clay %", xlab="E", ylab="N")
+contour(clay5.gts, level=seq(20, 80, 4), add=T)
+contour(clay5.ts, level=seq(20, 80, 4), add=T, lty=2, col="blue")
+grid(lty=1)
+points(e, n, cex=Clay5*2.5/max(Clay5), pch=23, bg=3)
+rm(clay5.ts, clay5.gts, xmin, xmax, ymin, ymax, res)
+
+
+require(sp)
+require(gstat)
+search()
+
+#we will take advantage of the gstat package as it adds a number of spatial data types Hence we will convert the data fame to the most apporiate sp class 
+
+class(obs)
+
+obs.sp = obs
+coordinates(obs.sp) = ~ e + n 
+class(obs.sp)
+
+str(obs.sp)
+
+head(obs.sp@data)
+summary(obs.sp@data)
+
+
+#Analysis of Spatial structure 
+
+#Compute and plot the empirical variogram of subsoil clay.
+v <- variogram(Clay5 ~ 1, obs.sp)
+print(plot(v, pl=T, pch=20, col="blue", cex=1.5))
+
+#Note that the range parameter of an exponential model is 1/3 of the effective range.
+m <- vgm(100, "Exp", 15000/3, 50)
+print(plot(v, pl=T, pch=20, col="blue", cex=1.5, model=m))
+
+#Once we have a model of the local spatial structure, we can use this to map the study area by kriging, which, if the model is correct, is an optimal interpolator.
+(m.f <- fit.variogram(v, m))
+str(m.f)
+attr(m.f, "SSErr")
+print(plot(v, pl=T, pch=20, col="blue", cex=1.5, model=m.f))
+
+#First we have to create a grid onto which to interpolate. We do this from the bounding box of the study area.
+diff(range(e))/1000
+diff(range(n))/1000
+diff(range(e)) * diff(range(n)) / 10^6
+
+
+
+res <- 500
+g500 <- expand.grid(e = seq(min(e), max(e), by=res), n = seq(min(n), max(n), by=res))
+coordinates(g500) <- ~ e + n
+gridded(g500) <- T
+str(g500)
+rm(res)
+
+#Now we krige onto this grid, and display the prediction and variance maps:
+k.o <- krige(Clay5 ~ 1, obs.sp, g500, m.f)
+str(k.o)
+
+
+plot.1 <- spplot(k.o, zcol="var1.pred",
+   main="OK prediction of Clay %, 30-50 cm", col.regions=bpy.colors(128),
+                 pretty=T)
+plot.2 <- spplot(k.o, zcol="var1.var",
+   main="OK prediction variance of Clay %, 30-50 cm", col.regions=cm.colors(128),
+                 pretty=T)
+print(plot.1, split=c(1,1,2,1), more=T)
+print(plot.2, split=c(2,1,2,1), more=F)
+
+
+k.o.500 <- krige(Clay5 ~ 1, obs.sp, g500, m.f, block=c(500, 500))
+str(k.o.500)
+summary(k.o$var1.pred - k.o.500$var1.pred)
+summary(k.o.500$var1.var / k.o$var1.var)
+
+
+
+
+
+```
+
+## Exploritory Data Analysis on tempurature and my 2 unique data sets. 
+#Data set seaweed - Cymodecea nodosa and absence
+
+```{r}
+
+#bar chart of species in the Mediterranean Sea 
+bioclasstable=with(seaweed, table(seaweed$BIO_CLASS))
+ggplot(seaweed, aes(BIO_CLASS, fill=BIO_CLASS))+geom_bar()
+
+#distribution of max and min temp for the year 2015
+par(mfrow=c(2,2))
+gdenMaxTemp=density(Cymodecea.nodosa$maxTemp_year, kernel="gaussian", bw="nrd0")
+hist(minTemp_year)
+hist(maxTemp_year)
+lines(gdenMaxTemp, col=2)
+
+
+
+#bar chart of a Cymodecea nodosa and absence 
+
+CymodeceaBioclasstable=with(Cymodecea.nodosa, table(Cymodecea.nodosa$BIO_CLASS))
+ggplot(Cymodecea.nodosa, aes(BIO_CLASS, fill=BIO_CLASS))+geom_bar()
+
+
+###############################
+##Cymodecea.nodosa Data frame##
+###############################
+
+#5 value summary statistics for each of the seasons in the Cymodecea.nodosa Data frame
+
+
+summary(maxTemp_year) ; summary(minTemp_year)
+
+summary(Cymodecea.nodosa$VOTEMPER_2015_summer);summary(Cymodecea.nodosa$VOTEMPER_2015_autumn) ;summary(Cymodecea.nodosa$VOTEMPER_2015_winter) ; summary(Cymodecea.nodosa$VOTEMPER_2015_spring) 
+
+##SUMMER
+#kernel density 
+ gdensummer=density(Cymodecea.nodosa$VOTEMPER_2015_summer, kernel="gaussian", bw="nrd0")
+rdensummer=density(Cymodecea.nodosa$VOTEMPER_2015_summer, kernel="rectangular", bw="nrd0")
+tdensummer=density(Cymodecea.nodosa$VOTEMPER_2015_summer, kernel="triangular", bw="nrd0")
+
+
+
+par(mfrow=c(2,2))
+boxplot(VOTEMPER_2015_summer, notch = T, horizontal = T, main="Boxplot of Summer")
+hist(Cymodecea.nodosa$VOTEMPER_2015_summer, bins= 30, main="Histogram of summer Water temp 2015") 
+lines(gdensummer, col=2)
+lines(tdensummer, col=3)
+lines(rdensummer, col=4)
+#rug(VOTEMPER_2015_summer)
+
+qqnorm(VOTEMPER_2015_summer, main = "QQ plot for summer temp vs Normal Distribution")
+qqline(VOTEMPER_2015_summer, col=4)
+
+qqnorm((log(VOTEMPER_2015_summer)), main = "QQ plot for summer temp vs Log Distribution")
+qqline(log(VOTEMPER_2015_summer), col=4)
+
+#Autumn 
+gdenautumn=density(Cymodecea.nodosa$VOTEMPER_2015_autumn, kernel="gaussian", bw="nrd0")
+rdenautumn=density(Cymodecea.nodosa$VOTEMPER_2015_autumn, kernel="rectangular", bw="nrd0")
+tdenautumn=density(Cymodecea.nodosa$VOTEMPER_2015_autumn, kernel="triangular", bw="nrd0")
+
+
+
+par(mfrow=c(2,2))
+boxplot(VOTEMPER_2015_autumn, notch = T, horizontal = T, main="Boxplot of autumn")
+hist(Cymodecea.nodosa$VOTEMPER_2015_autumn, bins= 30, main="Histogram of autumn Water temp 2015") 
+lines(gdenautumn, col=2)
+lines(tdenautumn, col=3)
+lines(rdenautumn, col=4)
+#rug(VOTEMPER_2015_autumn)
+
+qqnorm(VOTEMPER_2015_autumn, main = "QQ plot for autumn temp vs Normal Distribution")
+qqline(VOTEMPER_2015_autumn, col=4)
+
+qqnorm((log(VOTEMPER_2015_autumn)), main = "QQ plot for autumn temp vs Log Distribution")
+qqline(log(VOTEMPER_2015_autumn), col=4)
+
+#Winter
+
+gdenwinter=density(Cymodecea.nodosa$VOTEMPER_2015_winter, kernel="gaussian", bw="nrd0")
+rdenwinter=density(Cymodecea.nodosa$VOTEMPER_2015_winter, kernel="rectangular", bw="nrd0")
+tdenwinter=density(Cymodecea.nodosa$VOTEMPER_2015_winter, kernel="triangular", bw="nrd0")
+
+par(mfrow=c(2,2))
+boxplot(VOTEMPER_2015_winter, notch = T, horizontal = T, main="Boxplot of Winter")
+hist(Cymodecea.nodosa$VOTEMPER_2015_winter, bins= 30, main="Histogram of Winter Water temp 2015") 
+lines(gdenwinter, col=2)
+lines(tdenwinter, col=3)
+lines(rdenwinter, col=4)
+#rug(VOTEMPER_2015_winter)
+
+qqnorm(VOTEMPER_2015_winter, main = "QQ plot for Winter temp vs Normal Distribution")
+qqline(VOTEMPER_2015_winter, col=4)
+
+qqnorm(log(VOTEMPER_2015_winter), main = "QQ plot for Winter temp vs Log Distribution")
+qqline(log(VOTEMPER_2015_winter), col=4)
+
+
+#SPRING
+gdenspring=density(Cymodecea.nodosa$VOTEMPER_2015_spring, kernel="gaussian", bw="nrd0")
+rdenspring=density(Cymodecea.nodosa$VOTEMPER_2015_spring, kernel="rectangular", bw="nrd0")
+tdenspring=density(Cymodecea.nodosa$VOTEMPER_2015_spring, kernel="triangular", bw="nrd0")
+
+
+par(mfrow=c(2,2))
+boxplot(VOTEMPER_2015_spring, notch = T, horizontal = T, main="Boxplot of Spring")
+hist(Cymodecea.nodosa$VOTEMPER_2015_spring, bins= 30, main="Histogram of Spring Water temp 2015") 
+lines(gdenspring, col=2)
+lines(tdenspring, col=3)
+lines(rdenspring, col=4)
+#rug(VOTEMPER_2015_spring)
+
+qqnorm(VOTEMPER_2015_spring, main = "QQ plot for Spring temp vs Normal Distribution")
+qqline(VOTEMPER_2015_spring, col=4)
+
+qqnorm((log(VOTEMPER_2015_spring)), main = "QQ plot for Spring temp vs Log Distribution")
+qqline(log(VOTEMPER_2015_spring), col=4)
+
+table(absencenCyN)
+
+```
+
+
+This data set only contains data about a single species of sea grass in the Mediterranean called Cymodecea Nodosa a species that has been observed  1265 times. 
+For my first data set I made all the same plots with however in accordance to the different seasons of the year. The temperature recorded in the data set were all in Celsius, and are consistent to how you would imagine the temperature to be in the Mediterranean. There is a fair degree of temperature variation in the waters of the Mediterranean. It is generally significantly warmer as the seasons cycle towards the summer. 
+
+The calculated mean temperature of the Mediterranean for each season is as follows: 
+Summer: 25.38 C
+Autumn: 22.17 C
+Winter: 15.17 C
+Spring: 16.13 C
+
+With yearly maximum temperature of 27.20 C and yearly minimum temperatures of 13.82 C 
+
+Note that these values are both values significant above the mean Summer temperature and the mean winter temperatures. 
+
+As we do more exploratory analysis on our plots we notice that there are many outliers in the data set, which means that the mean's of the data can be misleading. Hence the attention should be instead on other measures of central tendency like the median or the mode. 
+
+The median temperatures for each season are 
+  Summer: 20.58 C
+  Autumn: 22.31 C
+  Winter: 15.387 C
+  Spring: 16.28 C
+
+Although the difference between the mean and the median aren't that significant. The main difference is the 4.8 C in summer. 
+
+
+##Exploratory Data Analsyis on equal absence and presence 
+
+```{r}
+
+###############################
+#######equal Data frame########
+###############################
+
+ggplot(equal, aes(x=LONGITUDE, y=LATITUDE), color=factor(absenceEq))+ 
+  geom_point(position="jitter")
+
+
+#bar chart of a Cymodecea nodosa and absence 
+
+EqualBioclasstable=with(equal, table(equal$BIO_CLASS))
+ggplot(equal, aes(absenceEq, fill=BIO_CLASS))+geom_bar()
+
+
+
+#5 value summary statistics for each of the seasons in the equal Data frame
+
+summary(equal$VOTEMPER_2015_summer);summary(equal$VOTEMPER_2015_autumn) ;summary(equal$VOTEMPER_2015_winter) ; summary(equal$VOTEMPER_2015_spring) 
+
+##SUMMER
+#kernel density 
+gdensummer=density(equal$VOTEMPER_2015_summer, kernel="gaussian", bw="nrd0")
+rdensummer=density(equal$VOTEMPER_2015_summer, kernel="rectangular", bw="nrd0")
+tdensummer=density(equal$VOTEMPER_2015_summer, kernel="triangular", bw="nrd0")
+
+
+
+par(mfrow=c(2,2))
+boxplot(VOTEMPER_2015_summer, notch = T, horizontal = T, main="Boxplot of Summer")
+hist(equal$VOTEMPER_2015_summer, main="Histogram of summer Water temp 2015") 
+lines(gdensummer, col=2)
+lines(tdensummer, col=3)
+lines(rdensummer, col=4)
+#rug(VOTEMPER_2015_summer)
+
+qqnorm(VOTEMPER_2015_summer, main = "QQ plot for summer temp vs Normal Distribution")
+qqline(VOTEMPER_2015_summer, col=4)
+
+#qqnorm((VOTEMPER_2015_summer), main = "QQ plot for summer temp vs Normal Distribution")
+
+#Autumn 
+gdenautumn=density(equal$VOTEMPER_2015_autumn, kernel="gaussian", bw="nrd0")
+rdenautumn=density(equal$VOTEMPER_2015_autumn, kernel="rectangular", bw="nrd0")
+tdenautumn=density(equal$VOTEMPER_2015_autumn, kernel="triangular", bw="nrd0")
+
+
+
+par(mfrow=c(2,2))
+boxplot(VOTEMPER_2015_autumn, notch = T, horizontal = T, main="Boxplot of autumn")
+hist(equal$VOTEMPER_2015_autumn, main="Histogram of autumn Water temp 2015") 
+lines(gdenautumn, col=2)
+lines(tdenautumn, col=3)
+lines(rdenautumn, col=4)
+#rug(VOTEMPER_2015_autumn)
+
+qqnorm(VOTEMPER_2015_autumn, main = "QQ plot for autumn temp vs Normal Distribution")
+qqline(VOTEMPER_2015_autumn, col=4)
+
+#qqnorm((VOTEMPER_2015_autumn), main = "QQ plot for autumn temp vs Normal Distribution")
+
+#Winter
+
+gdenwinter=density(equal$VOTEMPER_2015_winter, kernel="gaussian", bw="nrd0")
+rdenwinter=density(equal$VOTEMPER_2015_winter, kernel="rectangular", bw="nrd0")
+tdenwinter=density(equal$VOTEMPER_2015_winter, kernel="triangular", bw="nrd0")
+
+par(mfrow=c(2,2))
+boxplot(VOTEMPER_2015_winter, notch = T, horizontal = T, main="Boxplot of Winter")
+hist(equal$VOTEMPER_2015_winter, main="Histogram of Winter Water temp 2015") 
+lines(gdenwinter, col=2)
+lines(tdenwinter, col=3)
+lines(rdenwinter, col=4)
+#rug(VOTEMPER_2015_winter)
+
+qqnorm(VOTEMPER_2015_winter, main = "QQ plot for Winter temp vs Normal Distribution")
+qqline(VOTEMPER_2015_winter, col=4)
+
+#qqnorm((VOTEMPER_2015_winter, main = "QQ plot for Winter temp vs Normal Distribution")
+
+
+#SPRING
+gdenspring=density(equal$VOTEMPER_2015_spring, kernel="gaussian", bw="nrd0")
+rdenspring=density(equal$VOTEMPER_2015_spring, kernel="rectangular", bw="nrd0")
+tdenspring=density(equal$VOTEMPER_2015_spring, kernel="triangular", bw="nrd0")
+
+
+par(mfrow=c(2,2))
+boxplot(VOTEMPER_2015_spring, notch = T, horizontal = T, main="Boxplot of Spring")
+hist(equal$VOTEMPER_2015_spring, main="Histogram of Spring Water temp 2015") 
+lines(gdenspring, col=2)
+lines(tdenspring, col=3)
+lines(rdenspring, col=4)
+#rug(VOTEMPER_2015_spring)
+
+qqnorm(VOTEMPER_2015_spring, main = "QQ plot for Spring temp vs Normal Distribution")
+qqline(VOTEMPER_2015_spring, col=4)
+
+#qqnorm((VOTEMPER_2015_spring, main = "QQ plot for Spring temp vs Normal Distribution")
+
+
+
+```
+
+Geostatistics - Spatial Analysis 
+
+All the observations were made at known geographical locations, therefore we can examine the observations for their **spatial structure** 
+
+First we look at the spacial distribution of the points as well as the data values. We will start by creating a post plot of locations of absence and presence on lat and long data. For the season of Summer. 
+
+```{r, echo=FALSE}
+
+##Absence and presence of a single Species Cymodecea Nodosa 
+#season of summer
+plot(LONGITUDE, LATITUDE, cex=absencenCyN*2/max(absencenCyN), pch=10, col=(Cymodecea.nodosa$VOTEMPER_2015_summer), asp=1)
+grid(lty=1)
+title("Postplot of Absence and presence, by tempurature in the summer")
+
+require(spatial)
+CyNSummer.ls = surf.ls(1, LONGITUDE, LATITUDE, Cymodecea.nodosa$VOTEMPER_2015_summer)
+summary(CyNSummer.ls)
+CyNSummer.ls$beta
+
+(predict(CyNSummer.ls, 
+        diff(range(LONGITUDE))/2 + min(LONGITUDE), 
+  diff(range(LATITUDE))/2+min(LATITUDE)))
+
+CyNSummer.ls$beta[1]
+
+
+cCyNSummer.ls = correlogram(CyNSummer.ls, 50, plotit=F)
+str(cCyNSummer.ls)
+cCyNSummer.ls$y
+plot(cCyNSummer.ls$y, ylim=c(-.6, 1), xlim=c(0,50), pch=20, col="blue")
+text(cCyNSummer.ls$x, cCyNSummer.ls$y, round(cCyNSummer.ls$y, 2), pos=3)
+abline(h=0)
+dCyNSummer.ls = seq(1,250, by=.1)
+lines(dCyNSummer.ls, expcov(dCyNSummer.ls, d=1.5, alpha=.2), col="red")
+
+rm(cCyNSummer.ls,dCyNSummer.ls)
+
+absencenCyN.gls= surf.gls(1, expcov, d=1.5, alpha=.2, LONGITUDE, LATITUDE, absencenCyN)
+summary(absencenCyN.gls)
+absencenCyN.gls$beta
+
+
+#Local spatial dependence and ordinary Kringing
+xmin = min(LONGITUDE); xmax = max(LONGITUDE); ymin = min(LATITUDE); ymax = max(LATITUDE); res = 40
+absencenCyN.ts = trmat(CyNSummer.ls, xmin, xmax, ymin, ymax, res)
+absencenCyN.gts = trmat(absencenCyN.gls, xmin, xmax, ymin, ymax, res)
+eqscplot(absencenCyN.gts, type="n",
+    xlab="LONGITUDE", ylab="LATITUDE")
+contour(absencenCyN.gts, level=seq(20, 80, 4), add=T)
+contour(absencenCyN.gts, level=seq(20, 80, 4), add=T, lty=2, col="blue")
+grid(lty=1)
+points(LONGITUDE, lattice.getOption(), cex=absencenCyN*2.5/max(absencenCyN), pch=23, bg=3)
+rm(absencenCyN.ts, absencenCyN.gts, xmin, xmax, ymin, ymax, res)
+
+
+
+```
+
+Autumn
+
+```{r}
+
+plot(LONGITUDE, LATITUDE, cex=absencenCyN*2/max(absencenCyN), pch=10, col=(Cymodecea.nodosa$VOTEMPER_2015_autumn), asp=1)
+grid(lty=1)
+title("Postplot of Absence and presence, by tempurature in Autumn")
+
+require(spatial)
+CyNAutumn.ls = surf.ls(1, LONGITUDE, LATITUDE, Cymodecea.nodosa$VOTEMPER_2015_autumn) 
+summary(CyNAutumn.ls)
+CyNAutumn.ls$beta
+
+(predict(CyNAutumn.ls, 
+        diff(range(LONGITUDE))/2 + min(LONGITUDE), 
+  diff(range(LATITUDE))/2+min(LATITUDE)))
+
+CyNAutumn.ls$beta[1]
+
+
+cCyNAutumn.ls = correlogram(CyNSummer.ls, 50, plotit=F)
+str(cCyNAutumn.ls)
+cCyNAutumn.ls$y
+plot(cCyNAutumn.ls$y, ylim=c(-.6, 1), xlim=c(0,50), pch=20, col="blue")
+text(cCyNAutumn.ls$x, cCyNAutumn.ls$y, round(cCyNAutumn.ls$y, 2), pos=3)
+abline(h=0)
+dCyNAutumn.ls = seq(1,250, by=.1)
+lines(dCyNAutumn.ls , expcov(dCyNAutumn.ls , d=1.5, alpha=.2), col="red")
+
+rm(cCyNSummer.ls,dCyNAutumn.ls )
+
+CyNAutumn.gls= surf.gls(1, expcov, d=1.5, alpha=.2, LONGITUDE, LATITUDE, absencenCyN)
+summary(CyNAutumn.gls)
+CyNAutumn.gls$beta
+
+
+#Local spatial dependence and ordinary Kringing
+xmin = min(LONGITUDE); xmax = max(LONGITUDE); ymin = min(LATITUDE); ymax = max(LATITUDE); res = 40
+CyNAutumn.ts = trmat(CyNAutumn.ls, xmin, xmax, ymin, ymax, res)
+CyNAutumn.gts = trmat(CyNAutumn.gls, xmin, xmax, ymin, ymax, res)
+eqscplot(CyNAutumn.gts, type="n",
+    xlab="LONGITUDE", ylab="LATITUDE")
+contour(CyNAutumn.gts, level=seq(20, 80, 4), add=T)
+contour(CyNAutumn.gts, level=seq(20, 80, 4), add=T, lty=2, col="blue")
+grid(lty=1)
+points(LONGITUDE, lattice.getOption(), cex=absencenCyN*2.5/max(absencenCyN), pch=23, bg=3)
+rm(absencenCyN.ts, CyNAutumn.gts, xmin, xmax, ymin, ymax, res)
+
+
+
+
+```
+
+Winter
+
+``````{r}
+
+plot(LONGITUDE, LATITUDE, cex=absencenCyN*2/max(absencenCyN), pch=10, col=(Cymodecea.nodosa$VOTEMPER_2015_winter), asp=1)
+grid(lty=1)
+title("Postplot of Absence and presence, by tempurature in Autumn")
+
+require(spatial)
+CyNWinter.ls = surf.ls(1, LONGITUDE, LATITUDE, Cymodecea.nodosa$VOTEMPER_2015_winter) 
+summary(CyNWinter.ls)
+CyNWinter.ls$beta
+
+(predict(CyNWinter.ls, 
+        diff(range(LONGITUDE))/2 + min(LONGITUDE), 
+  diff(range(LATITUDE))/2+min(LATITUDE)))
+
+CyNWinter.ls$beta[1]
+
+
+cCyNWinter.ls = correlogram(CyNWinter.ls, 50, plotit=F)
+str(cCyNWinter.ls)
+cCyNWinter.ls$y
+plot(cCyNWinter.ls$y, ylim=c(-.6, 1), xlim=c(0,50), pch=20, col="blue")
+text(cCyNWinter.ls$x, cCyNWinter.ls$y, round(cCyNWinter.ls$y, 2), pos=3)
+abline(h=0)
+dCyNWinter.ls = seq(1,250, by=.1)
+lines(dCyNWinter.ls , expcov(dCyNWinter.ls , d=1.5, alpha=.2), col="red")
+
+rm(cCyNWinter.ls,dCyNWinter.ls )
+
+CyNAutumn.gls= surf.gls(1, expcov, d=1.5, alpha=.2, LONGITUDE, LATITUDE, absencenCyN)
+summary(CyNWinter.gls)
+CyNWinter.gls$beta
+
+
+#Local spatial dependence and ordinary Kringing
+xmin = min(LONGITUDE); xmax = max(LONGITUDE); ymin = min(LATITUDE); ymax = max(LATITUDE); res = 40
+CyNWinter.ts = trmat(CyNAutumn.ls, xmin, xmax, ymin, ymax, res)
+CyNWinter.gts = trmat(CyNAutumn.gls, xmin, xmax, ymin, ymax, res)
+eqscplot(CyNWinter.gts, type="n",
+    xlab="LONGITUDE", ylab="LATITUDE")
+contour(CyNSpring.gts, level=seq(20, 80, 4), add=T)
+contour(CyNSpring.gts, level=seq(20, 80, 4), add=T, lty=2, col="blue")
+grid(lty=1)
+points(LONGITUDE, lattice.getOption(), cex=absencenCyN*2.5/max(absencenCyN), pch=23, bg=3)
+rm(absencenCyN.ts, CyNAutumn.gts, xmin, xmax, ymin, ymax, res)
+
+
+
+```
+
+
+Spring
+```{r}
+plot(LONGITUDE, LATITUDE, cex=absencenCyN*2/max(absencenCyN), pch=10, col=(Cymodecea.nodosa$VOTEMPER_2015_spring), asp=1)
+grid(lty=1)
+title("Postplot of Absence and presence, by tempurature in Autumn")
+
+require(spatial)
+CyNSpring.ls = surf.ls(1, LONGITUDE, LATITUDE, Cymodecea.nodosa$VOTEMPER_2015_spring) 
+summary(CyNSpring.ls)
+CyNSpring.ls$beta
+
+(predict(CyNSpring.ls, 
+        diff(range(LONGITUDE))/2 + min(LONGITUDE), 
+  diff(range(LATITUDE))/2+min(LATITUDE)))
+
+CyNSpring.ls$beta[1]
+
+
+cCyNSpring.ls = correlogram(CyNSpring.ls, 50, plotit=F)
+str(cCyNSpring.ls)
+cCyNSpring.ls$y
+plot(cCyNSpring.ls$y, ylim=c(-.6, 1), xlim=c(0,50), pch=20, col="blue")
+text(cCyNSpring.ls$x, cCyNAutumn.ls$y, round(cCyNAutumn.ls$y, 2), pos=3)
+abline(h=0)
+dCyNSpring.ls = seq(1,250, by=.1)
+lines(dCyNSpring.ls , expcov(dCyNSpring.ls , d=1.5, alpha=.2), col="red")
+
+rm(cCyNSring.ls,dCyNSpring.ls )
+
+CyNSpring.gls= surf.gls(1, expcov, d=1.5, alpha=.2, LONGITUDE, LATITUDE, absencenCyN)
+summary(CyNSpring.gls)
+CyNSpring.gls$beta
+
+
+#Local spatial dependence and ordinary Kringing
+xmin = min(LONGITUDE); xmax = max(LONGITUDE); ymin = min(LATITUDE); ymax = max(LATITUDE); res = 40
+CyNSpring.ts = trmat(CyNAutumn.ls, xmin, xmax, ymin, ymax, res)
+CyNSpring.gts = trmat(CyNAutumn.gls, xmin, xmax, ymin, ymax, res)
+eqscplot(CyNSpring.gts, type="n",
+    xlab="LONGITUDE", ylab="LATITUDE")
+contour(CyNAutumn.gts, level=seq(20, 80, 4), add=T)
+contour(CyNAutumn.gts, level=seq(20, 80, 4), add=T, lty=2, col="blue")
+grid(lty=1)
+points(LONGITUDE, lattice.getOption(), cex=absencenCyN*2.5/max(absencenCyN), pch=23, bg=3)
+rm(absencenCyN.ts, CyNAutumn.gts, xmin, xmax, ymin, ymax, res)
+
+
+```
+
+Now we will explore the local spatial dependence and Ordinary Kriging 
+Creating Spatially - Explicit Objects 
+
+```{r}
+
+library(gstat)
+library(sp)
+require(sp)
+require(gstat)
+search()
+
+
+#we will take advantage of the gstat package as it adds a number of spatial data types Hence we will convert the data fame to the most appropriate sp class 
+
+Cymodecea.nodosa
+
+class(Cymodecea.nodosa)
+
+Cymodecea.nodosa.sp = Cymodecea.nodosa
+coordinates(Cymodecea.nodosa.sp ) = ~ LONGITUDE + LATITUDE
+class(Cymodecea.nodosa.sp )
+
+str(Cymodecea.nodosa.sp )
+
+head(Cymodecea.nodosa.sp @data)
+summary(Cymodecea.nodosa.sp@data)
+
+
+#Analysis of Spatial 
+q = variogram(Cymodecea.nodosa$maxTemp_year ~ -8, Cymodecea.nodosa.sp)
+print(plot(q, pl=T, pch=20, col="blue", cex=1.5))
+
+m <- vgm(10, "Exp", 500, 50)
+print(plot(v, pl=T, pch=20, col="blue", cex=1.5, model=m))
+
+
+
+```
+
+
+##Conclusions
+
+The results for each season are very different : 
+In the summer: the temperature appears to increase from the Longitude to the latitude especially the middle.
+In the Spring: the temperature appears to increase from the Longitude to the latitude There are local anomalies to this trend, especially the middle.
+In Autumn : the temperature appears to increase from the Longitude to the latitude There are local anomalies tothis trend, especially the middle.
+In the Winter: the temperature appears to increase from the Longitude to the latitude There are local anomalies to this trend, especially the middle.
+
+I think my results in particular statically insignificant as my r^2 for all my spatial plots are not within the -1 to 1 range, which could be due to the large data set and outliers in my data set. I think I could have better estimated my model. 
+
+
+#Just plots and extra code 
+
+```{r}
+
+# we are going to determine the geographic extent of the data 
+
+max.lat= ceiling(max(LATITUDE))
+min.lat=floor(min(LATITUDE))
+max.long=ceiling(max(LONGITUDE))
+min.long= floor(min(LONGITUDE))
+geographic.extent = extent(x= c(min.long, max.long, min.lat, max.lat))
+
+s= length(absenceEq)
+r=dpill(LONGITUDE, LATITUDE)
+install.packages("animation")
+library(animation)
+oopt=ani.options(interval=.25, nmax=10000)
+plot(maxTemp_year)
+rmssmooth=rms(LONGITUDE, LATITUDE, h)
+
+
+#plot(seaweed, 
+    # xlim = c(min.long, max.long),
+     #ylim = c(min.lat, max.lat))
+
+ggplot()+ 
+  geom_point(data=seaweed, aes(x=LONGITUDE, y=LATITUDE, color=factor(absencenpresence)), apha=0.1) + 
+  labs(title="ggplot map of absence and presence")
+
+
+plot(LATITUDE,LONGITUDE, col=as.numeric(VOTEMPER_2015_summer))
+title("LONGITUDE and LATITUDE visualisastion of the Tempurature in the Summer")
+
+
+
+plot(LATITUDE,LONGITUDE, col=absencenCyN)
+title("LONGITUDE and LATITUDE visualisastion of the Tempurature in the Spring")
+#legend()
+```
+
